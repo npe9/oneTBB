@@ -97,7 +97,46 @@ namespace r1 {
 
 #if __TBB_USE_FUTEX
 
+} } } // namespaces
+#include "lithe_coop.h"
+namespace tbb { namespace detail { namespace r1 {
+
+static inline int sys_futex_wait( void *futex, int comparand );
+static inline int sys_futex_wakeup_one( void *futex );
+
+/* Lithe (lithe_coop.h): a Lithe context parks on liblithe's futex emulation so its
+   hart runs other contexts; anything else takes the kernel futex and is counted, so
+   wakes know whether the syscall is needed. Wakes reach both kinds of waiter (a
+   spurious wake is harmless: every caller re-checks in a loop). */
 static inline int futex_wait( void *futex, int comparand ) {
+    if (lithe_can_park()) {
+        tbb_lithe_futex_wait_(static_cast<int*>(futex), comparand);
+        return 0;
+    }
+    if (g_lithe_active.load(std::memory_order_relaxed)) {
+        g_lithe_kwaiters.fetch_add(1, std::memory_order_seq_cst);
+        int r = sys_futex_wait(futex, comparand);
+        g_lithe_kwaiters.fetch_sub(1, std::memory_order_relaxed);
+        return r;
+    }
+    return sys_futex_wait(futex, comparand);
+}
+
+static inline int futex_wakeup_one( void *futex ) {
+    if (g_lithe_active.load(std::memory_order_relaxed)) {
+        int n = tbb_lithe_futex_wake_some_(static_cast<int*>(futex), 1);
+        std::atomic_thread_fence(std::memory_order_seq_cst);
+        if (g_lithe_kwaiters.load(std::memory_order_relaxed) == 0)
+            return n > 0 ? 1 : 0;
+        if (n > 0) {
+            sys_futex_wakeup_one(futex); // a kernel waiter too; its wake is spurious-safe
+            return 1;
+        }
+    }
+    return sys_futex_wakeup_one(futex);
+}
+
+static inline int sys_futex_wait( void *futex, int comparand ) {
 #ifdef __OpenBSD__
     int r = ::futex((volatile uint32_t *)futex, __TBB_FUTEX_WAIT, comparand, nullptr, nullptr);
 #else
@@ -110,7 +149,7 @@ static inline int futex_wait( void *futex, int comparand ) {
     return r;
 }
 
-static inline int futex_wakeup_one( void *futex ) {
+static inline int sys_futex_wakeup_one( void *futex ) {
 #ifdef __OpenBSD__
     int r = ::futex((volatile uint32_t *)futex, __TBB_FUTEX_WAKE, 1 , nullptr, nullptr);
 #else

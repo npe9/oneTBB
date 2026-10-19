@@ -27,6 +27,25 @@
 #include <atomic>
 
 
+#include "lithe_coop.h"
+namespace tbb { namespace detail { namespace r1 {
+std::atomic<int> g_lithe_active{0};
+std::atomic<int> g_lithe_kwaiters{0};
+int lithe_init() {
+    static std::atomic<int> decided{0};
+    if (decided.load(std::memory_order_acquire))
+        return g_lithe_active.load(std::memory_order_relaxed);
+    if (lithe_fork_join_context_create && lithe_ensure_root_fork_join_sched && lithe_sched_current
+        && lithe_can_block && tbb_lithe_futex_wait_ && tbb_lithe_futex_wake_some_) {
+        const char* e = std::getenv("TBB_LITHE");
+        if (!(e && e[0] == '0') && (lithe_sched_current() || lithe_ensure_root_fork_join_sched()))
+            g_lithe_active.store(1, std::memory_order_release);
+    }
+    decided.store(1, std::memory_order_release);
+    return g_lithe_active.load(std::memory_order_relaxed);
+}
+} } }
+
 namespace tbb {
 namespace detail {
 namespace r1 {

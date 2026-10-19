@@ -69,6 +69,18 @@ inline void yield() {
 inline void yield() {
     SwitchToThread();
 }
+#elif defined(__linux__) && !__TBBMALLOC_BUILD
+/* lithe-docker: inside a Lithe context, sched_yield only bounces the hart's kernel
+   thread; yield the context so another runs on the hart (weak refs: no-op without
+   liblithe). */
+extern "C" __attribute__((weak)) int lithe_can_block(void);
+extern "C" __attribute__((weak)) void lithe_context_yield(void);
+inline void yield() {
+    if (lithe_can_block && lithe_context_yield && lithe_can_block())
+        lithe_context_yield();
+    else
+        std::this_thread::yield();
+}
 #else
 using std::this_thread::yield;
 #endif

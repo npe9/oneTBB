@@ -41,6 +41,7 @@
 
 #include "itt_notify.h"
 #include "semaphore.h"
+#include "lithe_coop.h"
 
 // All platform-specific threading support is in this header.
 
@@ -184,7 +185,46 @@ inline void thread_monitor::check( int error_code, const char* routine ) {
     }
 }
 
+/* Lithe workers (lithe_coop.h). The handle is a tagged pointer (low bit set; glibc
+   pthread_t values are aligned pointers) to this record; the worker and whoever
+   joins or detaches it each drop one reference. Workers go in the CALLER's
+   fork-join scheduler (else the root), as for the Lithe libgomp: in the root they
+   starved -- harts granted to the application's child scheduler stay there while the
+   TBB master spin-yields for its chunks (2 harts ran like 1). Caveat (GAPS B26): the
+   pool outlives that scheduler, so a join_all on it waits for TBB's workers. */
+struct lithe_worker_rec {
+    void* (*fn)(void*);
+    void* arg;
+    std::atomic<int> done{0};
+    std::atomic<int> refs{2};
+};
+static inline bool lithe_handle(pthread_t h) { return (static_cast<uintptr_t>(h) & 1u) != 0; }
+static inline lithe_worker_rec* lithe_rec(pthread_t h) {
+    return reinterpret_cast<lithe_worker_rec*>(static_cast<uintptr_t>(h) & ~static_cast<uintptr_t>(1));
+}
+static inline void lithe_rec_drop(lithe_worker_rec* r) {
+    if (r->refs.fetch_sub(1, std::memory_order_acq_rel) == 1) delete r;
+}
+static void lithe_worker_start(void* x) {
+    lithe_worker_rec* r = static_cast<lithe_worker_rec*>(x);
+    r->fn(r->arg);
+    r->done.store(1, std::memory_order_release);
+    tbb_lithe_futex_wake_some_(reinterpret_cast<int*>(&r->done), 1 << 30);
+    lithe_rec_drop(r);
+}
+
 inline thread_monitor::handle_type thread_monitor::launch( void* (*thread_routine)(void*), void* arg, std::size_t stack_size ) {
+    if (lithe_init()) {
+        lithe_worker_rec* r = new lithe_worker_rec;
+        r->fn = thread_routine;
+        r->arg = arg;
+        lithe_fork_join_sched_t* root = lithe_worker_sched();
+        if (root && lithe_fork_join_context_create(root, stack_size > 0 ? stack_size : 4u << 20,
+                                                    lithe_worker_start, r))
+            return static_cast<pthread_t>(reinterpret_cast<uintptr_t>(r) | 1u);
+        delete r;
+        handle_perror(EAGAIN, "lithe_fork_join_context_create has failed");
+    }
     // FIXME - consider more graceful recovery than just exiting if a thread cannot be launched.
     // Note that there are some tricky situations to deal with, such that the thread is already
     // grabbed as part of an OpenMP team.
@@ -216,10 +256,30 @@ inline thread_monitor::handle_type thread_monitor::launch( void* (*thread_routin
 }
 
 void thread_monitor::join(handle_type handle) {
+    if (lithe_handle(handle)) {
+        lithe_worker_rec* r = lithe_rec(handle);
+        if (lithe_can_park()) {
+            while (!r->done.load(std::memory_order_acquire))
+                tbb_lithe_futex_wait_(reinterpret_cast<int*>(&r->done), 0);
+        } else {
+            /* Teardown (_dl_fini, no scheduler to park on): the worker is on a hart and
+               will finish; wait a bounded few ms, then leak rather than hang a destructor
+               (same rule as the lithified libomp's reap). */
+            for (int i = 0; i < 20000 && !r->done.load(std::memory_order_acquire); ++i)
+                sched_yield();
+            if (!r->done.load(std::memory_order_acquire)) return;
+        }
+        lithe_rec_drop(r);
+        return;
+    }
     check(pthread_join(handle, nullptr), "pthread_join has failed");
 }
 
 void thread_monitor::detach_thread(handle_type handle) {
+    if (lithe_handle(handle)) {
+        lithe_rec_drop(lithe_rec(handle));
+        return;
+    }
     check(pthread_detach(handle), "pthread_detach has failed");
 }
 #endif /* __TBB_USE_POSIX */

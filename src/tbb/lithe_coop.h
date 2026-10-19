@@ -31,6 +31,7 @@ __attribute__((weak)) lithe_fork_join_context_t* lithe_fork_join_context_create(
     lithe_fork_join_sched_t*, std::size_t, void (*)(void*), void*);
 /* liblithe's futex emulation (src/lithe/src/futex.c); its names collide with
    TBB's own static futex helpers, hence the asm labels. */
+__attribute__((weak)) void lithe_fork_join_context_set_daemon(lithe_fork_join_context_t*);
 /* only its address: a fork-join scheduler's first member (funcs) points at it */
 __attribute__((weak)) extern const char lithe_fork_join_sched_funcs[];
 __attribute__((weak)) int tbb_lithe_futex_wait_(int*, int) __asm__("futex_wait");

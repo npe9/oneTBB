@@ -219,9 +219,13 @@ inline thread_monitor::handle_type thread_monitor::launch( void* (*thread_routin
         r->fn = thread_routine;
         r->arg = arg;
         lithe_fork_join_sched_t* root = lithe_worker_sched();
-        if (root && lithe_fork_join_context_create(root, stack_size > 0 ? stack_size : 4u << 20,
-                                                    lithe_worker_start, r))
+        lithe_fork_join_context_t* lc = root ? lithe_fork_join_context_create(
+            root, stack_size > 0 ? stack_size : 4u << 20, lithe_worker_start, r) : nullptr;
+        if (lc) {
+            // TBB's pool outlives any one user of this scheduler: keep it out of join_all (B26)
+            if (lithe_fork_join_context_set_daemon) lithe_fork_join_context_set_daemon(lc);
             return static_cast<pthread_t>(reinterpret_cast<uintptr_t>(r) | 1u);
+        }
         delete r;
         handle_perror(EAGAIN, "lithe_fork_join_context_create has failed");
     }

@@ -69,10 +69,12 @@ inline void yield() {
 inline void yield() {
     SwitchToThread();
 }
-#elif defined(__linux__) && !__TBBMALLOC_BUILD
+#elif defined(__linux__)
 /* lithe-docker: inside a Lithe context, sched_yield only bounces the hart's kernel
    thread; yield the context so another runs on the hart (weak refs: no-op without
-   liblithe). */
+   liblithe). tbbmalloc too (2026-10-23): its backoff (do_yield, Synchronize.h
+   spin mutexes, backend/large_objects waits) runs on whichever context allocates
+   and was the last sched_yield left in the TBB build. */
 extern "C" __attribute__((weak)) int lithe_can_block(void);
 extern "C" __attribute__((weak)) void lithe_context_yield(void);
 inline void yield() {

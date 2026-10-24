@@ -7,6 +7,7 @@
 
 #include "detail/_tcm_assert.h"
 #include "detail/hwloc_utils.h"
+#include "detail/lithe_coop.h"
 #include "detail/_environment.h"
 #include "tcm.h"
 #include "tcm_permit_rep.h"
@@ -527,6 +528,10 @@ struct ThreadComposabilityManagerData {
     }
 #endif
 
+    // Lithe: the process's CPUs are its harts; permit no more than the hart budget.
+    if (int harts = lithe_hart_limit(); harts > 0)
+        process_concurrency = std::min(process_concurrency, (uint32_t)harts);
+
     available_concurrency = platform_resources(process_concurrency);
     __TCM_ASSERT(available_concurrency >= 1, nullptr);
 
@@ -538,7 +543,7 @@ struct ThreadComposabilityManagerData {
     system_topology::destroy();
   }
 
-  std::mutex data_mutex{};
+  coop_mutex data_mutex{};
 
   tcm_client_id_t client_id = 1;
 
@@ -888,7 +893,7 @@ public:
 
   tcm_client_id_t register_client(tcm_callback_t r) {
       __TCM_PROFILE_THIS_FUNCTION();
-      const std::lock_guard<std::mutex> l(data_mutex);
+      const std::lock_guard<coop_mutex> l(data_mutex);
       tcm_client_id_t clid = client_id++;
       client_to_callback_map[clid] = r;
       return clid;
@@ -906,7 +911,7 @@ public:
       std::vector<tcm_permit_handle_t> client_permits;
       client_resources_t client_resources;
       {
-          const std::lock_guard<std::mutex> l(data_mutex);
+          const std::lock_guard<coop_mutex> l(data_mutex);
           client_resources = clear_up_internals_from(clid);
           __TCM_ASSERT(available_concurrency <= available_concurrency + client_resources.concurrency,
                      "Overflow detected");
@@ -1102,7 +1107,7 @@ public:
 
     update_callbacks_t callbacks;
     if (!req.flags.request_as_inactive) {
-      const std::lock_guard<std::mutex> l(data_mutex);
+      const std::lock_guard<coop_mutex> l(data_mutex);
 
       uint32_t initially_available = available_concurrency;
 
@@ -1179,7 +1184,7 @@ public:
     __TCM_PROFILE_THIS_FUNCTION();
     bool shall_negotiate_resources = false;
     {
-      const std::lock_guard<std::mutex> l(data_mutex);
+      const std::lock_guard<coop_mutex> l(data_mutex);
       __TCM_ASSERT(is_valid(ph), "Idling non-existing permit");
       tcm_permit_data_t& pd = ph->data;
       tcm_permit_state_t curr_state = get_permit_state(pd);
@@ -1203,7 +1208,7 @@ public:
     update_callbacks_t callbacks;
     {
       // TODO: Consider permit activation without acquiring the lock.
-      const std::lock_guard<std::mutex> l(data_mutex);
+      const std::lock_guard<coop_mutex> l(data_mutex);
       __TCM_ASSERT(is_valid(ph), "Activating non-existing permit.");
 
       tcm_permit_data_t& pd = ph->data;
@@ -1294,7 +1299,7 @@ public:
 
     bool shall_negotiate_resources = false;
     {
-      const std::lock_guard<std::mutex> l(data_mutex);
+      const std::lock_guard<coop_mutex> l(data_mutex);
       __TCM_ASSERT(is_valid(ph), "Deactivating non-existing permit.");
 
       curr_state = get_permit_state(pd);
@@ -1388,7 +1393,7 @@ public:
 
     bool should_renegotiate = false;
     {
-        const std::lock_guard<std::mutex> l(data_mutex);
+        const std::lock_guard<coop_mutex> l(data_mutex);
         __TCM_ASSERT(is_valid(handle), "Releasing of an invalid permit");
 
         const uint32_t released_concurrency = clear_up_internals_from(handle);
@@ -2555,7 +2560,7 @@ protected:
 
         update_callbacks_t callbacks;
         {
-            const std::lock_guard<std::mutex> lock(data_mutex);
+            const std::lock_guard<coop_mutex> lock(data_mutex);
 
             // Process of PENDING permits first in order to activate as many permits as possible
             std::vector<tcm_permit_handle_t> pending_permits_copy(
@@ -2665,7 +2670,7 @@ using ThreadComposabilityManager = internal::ThreadComposabilityFairBalance;
 class theTCM {
   static ThreadComposabilityManager* tcm_ptr;
   static std::size_t reference_count;
-  static std::mutex tcm_mutex;
+  static internal::coop_mutex tcm_mutex;
   static internal::environment tcm_env;
 public:
   static bool is_enabled() {
@@ -2685,7 +2690,7 @@ public:
   friend float internal::tcm_oversubscription_factor();
 
   static void increase_ref_count() {
-    std::lock_guard<std::mutex> l(tcm_mutex);
+    std::lock_guard<internal::coop_mutex> l(tcm_mutex);
     if (reference_count++)
       return;
     tcm_ptr = new ThreadComposabilityManager{};
@@ -2703,7 +2708,7 @@ public:
   static void decrease_ref_count() {
     ThreadComposabilityManager* rm_instance_to_delete = tcm_ptr;
     {
-      std::lock_guard<std::mutex> l(tcm_mutex);
+      std::lock_guard<internal::coop_mutex> l(tcm_mutex);
       __TCM_ASSERT(reference_count != 0, "Incorrect reference count.");
       if (--reference_count)
         return;
@@ -2732,7 +2737,7 @@ public:
 
 ThreadComposabilityManager* theTCM::tcm_ptr{nullptr};
 std::size_t theTCM::reference_count{0};
-std::mutex theTCM::tcm_mutex{};
+internal::coop_mutex theTCM::tcm_mutex{};
 internal::environment theTCM::tcm_env{};
 
 float internal::tcm_oversubscription_factor() {

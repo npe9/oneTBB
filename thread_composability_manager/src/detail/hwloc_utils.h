@@ -12,6 +12,7 @@
 #include <thread>               // std::this_thread::yield()
 
 #include "_tcm_assert.h"
+#include "lithe_coop.h"      // tcm::internal::coop_yield (Lithe contexts yield, not harts)
 
 #if _MSC_VER && !__INTEL_COMPILER && !__clang__
 #pragma warning( push )
@@ -73,7 +74,7 @@ public:
 
     ~hwloc_topology_loader_t() {
         if (is_initialized) {
-            while (spin_mutex.test_and_set()) { std::this_thread::yield(); }
+            while (spin_mutex.test_and_set()) { tcm::internal::coop_yield(); }
             hwloc_topology_destroy(topology);
             is_initialized = false;
             spin_mutex.clear();
@@ -83,7 +84,7 @@ public:
     hwloc_topology_t get_topology() {
         hwloc_topology_t new_topology{nullptr};
 
-        while (spin_mutex.test_and_set()) { std::this_thread::yield(); }
+        while (spin_mutex.test_and_set()) { tcm::internal::coop_yield(); }
         if (is_initialized) {
             hwloc_topology_dup(&new_topology, topology);
         }

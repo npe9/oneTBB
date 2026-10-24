@@ -207,6 +207,7 @@ static inline void lithe_rec_drop(lithe_worker_rec* r) {
 }
 static void lithe_worker_start(void* x) {
     lithe_worker_rec* r = static_cast<lithe_worker_rec*>(x);
+    if (lithe_sched_trace_label_self) lithe_sched_trace_label_self("tbb worker");
     r->fn(r->arg);
     r->done.store(1, std::memory_order_release);
     tbb_lithe_futex_wake_some_(reinterpret_cast<int*>(&r->done), 1 << 30);

@@ -22,6 +22,7 @@
 #include "scheduler_common.h"
 #include "arena.h"
 #include "threading_control.h"
+#include "lithe_coop.h"
 
 namespace tbb {
 namespace detail {
@@ -34,7 +35,7 @@ public:
     waiter_base(arena& a, int yields_multiplier = 1) : my_arena(a), my_backoff(int(a.my_num_slots), yields_multiplier) {}
 
     bool pause() {
-        if (my_backoff.pause()) {
+        if (lithe_should_stop_spinning() || my_backoff.pause()) {
             my_arena.out_of_work();
             return true;
         }

@@ -18,6 +18,7 @@
 #ifndef _TBB_task_dispatcher_H
 #define _TBB_task_dispatcher_H
 
+#include "lithe_coop.h"
 #include "oneapi/tbb/detail/_utils.h"
 #include "oneapi/tbb/detail/_task.h"
 #include "oneapi/tbb/global_control.h"
@@ -198,6 +199,9 @@ d1::task* task_dispatcher::receive_or_steal_task(
     inbox.set_is_idle(true);
 
     bool stealing_is_allowed = can_steal();
+    // Lithe trace: the idle stretch (first pause .. task found or sleep) as a phase slice
+    const int trace_steal = lithe_trace_steal_id();
+    bool traced_idle = false;
 
     // Stealing loop mailbox/enqueue/other_slots
     for (;;) {
@@ -240,8 +244,10 @@ d1::task* task_dispatcher::receive_or_steal_task(
             break; // Stealing success, end of stealing attempt
         }
         // Nothing to do, pause a little.
+        if (trace_steal && !traced_idle) { lithe_sched_trace_phase_begin(trace_steal); traced_idle = true; }
         waiter.pause(slot);
     } // end of nonlocal task retrieval loop
+    if (traced_idle) lithe_sched_trace_phase_end();
 
     __TBB_ASSERT(is_alive(a.my_guard), nullptr);
     if (inbox.is_idle_state(true)) {

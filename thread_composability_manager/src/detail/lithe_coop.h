@@ -16,7 +16,9 @@
 #ifndef __TCM_LITHE_COOP_H
 #define __TCM_LITHE_COOP_H
 
+#include <cstdint>
 #include <cstdlib>
+#include <unordered_map>
 #include <mutex>
 #include <thread>
 
@@ -24,6 +26,8 @@ extern "C" {
 __attribute__((weak)) int lithe_can_block(void);
 __attribute__((weak)) void lithe_context_yield(void);
 __attribute__((weak)) int parlib_vcore_limit(void);
+__attribute__((weak)) int lithe_sched_trace_enabled(void);
+__attribute__((weak)) void lithe_sched_trace_emit(uint8_t, void*, uint32_t, uint8_t, int32_t);
 }
 
 namespace tcm {
@@ -69,6 +73,23 @@ public:
   bool try_lock() { return m.try_lock(); }
   void unlock() { m.unlock(); }
 };
+
+//! Lithe Perfetto trace (LITHE_SCHED_TRACE=1): a permit's granted concurrency becomes a
+//! counter track "tcm permit N (granted)" (LITHE_ST_TCM_PERMIT = 38; 0 = released/idle).
+//! Callers hold TCM's data mutex, which guards the key table. Emitted only from a Lithe
+//! context, since the trace ring is per hart.
+inline void trace_permit(const void* ph, uint32_t granted, bool erase = false) {
+  if (!lithe_sched_trace_emit || !lithe_sched_trace_enabled || !lithe_sched_trace_enabled()
+      || !lithe_can_yield())
+    return;
+  static std::unordered_map<const void*, uint32_t> keys;
+  static uint32_t next = 1;
+  auto it = keys.find(ph);
+  uint32_t key = it != keys.end() ? it->second : (keys[ph] = next++);
+  lithe_sched_trace_emit(38, nullptr, key, 0, int32_t(granted));
+  if (erase)
+    keys.erase(ph);
+}
 
 } // namespace internal
 } // namespace tcm

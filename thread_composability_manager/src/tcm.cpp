@@ -703,6 +703,7 @@ int32_t update(tcm_permit_data_t& permit, tcm_permit_state_t current_state,
         }
     }
     commit_permit_modification(change.ph);
+    trace_permit(change.ph, get_permit_grant(permit));
 
     return concurrency_delta;
 }
@@ -1261,6 +1262,7 @@ public:
           }
           ph->data.state.store(TCM_PERMIT_STATE_ACTIVE, std::memory_order_relaxed);
           add_permit(*this, ph, TCM_PERMIT_STATE_ACTIVE);
+          internal::trace_permit(ph, get_permit_grant(ph));
       } else {
           __TCM_ASSERT(is_inactive(curr_state), "Inactive permit is expected");
           determine_nested_permit(ph);
@@ -1397,6 +1399,7 @@ public:
         __TCM_ASSERT(is_valid(handle), "Releasing of an invalid permit");
 
         const uint32_t released_concurrency = clear_up_internals_from(handle);
+        internal::trace_permit(handle, 0, /*erase*/true);
 
         __TCM_ASSERT(available_concurrency <= available_concurrency + released_concurrency,
                      "Overflow detected");

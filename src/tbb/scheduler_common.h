@@ -42,6 +42,7 @@
 #endif
 
 #include <cstdint>
+#include <chrono>
 #include <exception>
 #include <memory> // unique_ptr
 #include <unordered_map>
@@ -276,6 +277,7 @@ class stealing_loop_backoff {
     const int my_yield_threshold;
     int my_pause_count;
     int my_yield_count;
+    std::chrono::steady_clock::time_point my_nospin_t0{};
 public:
     // my_yield_threshold = 100 is an experimental value. Ideally, once we start calling __TBB_Yield(),
     // the time spent spinning before calling out_of_work() should be approximately
@@ -298,6 +300,33 @@ public:
             }
         }
         return false;
+    }
+    //! TBB_LITHE_NOSPIN_IDLE (lithe_coop.h): no pause/yield budget. The first call reports
+    //! saturation at once; later calls in the same steal loop (the arena still had work, so
+    //! the caller kept looking) yield once each, as the stock loop does once saturated.
+    //! With TBB_LITHE_IDLE_YIELD_US=N (> 0) it yields -- no PAUSE spin -- for up to N us from
+    //! the first empty pass before reporting saturation (a time budget instead of a count).
+    bool pause_nospin(long budget_ns) {
+        if (my_yield_count) {
+            d0::yield();
+            return true;
+        }
+        if (budget_ns > 0) {
+            auto now = std::chrono::steady_clock::now();
+            if (my_pause_count == 0) {
+                my_nospin_t0 = now;
+                my_pause_count = 1;
+                d0::yield();
+                return false;
+            }
+            if (now - my_nospin_t0 < std::chrono::nanoseconds(budget_ns)) {
+                d0::yield();
+                return false;
+            }
+        }
+        my_pause_count = my_pause_threshold;
+        my_yield_count = my_yield_threshold;
+        return true;
     }
     void reset_wait() {
         my_pause_count = my_yield_count = 0;

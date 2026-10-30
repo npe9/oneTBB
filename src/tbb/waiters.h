@@ -35,7 +35,8 @@ public:
     waiter_base(arena& a, int yields_multiplier = 1) : my_arena(a), my_backoff(int(a.my_num_slots), yields_multiplier) {}
 
     bool pause() {
-        if (lithe_should_stop_spinning() || my_backoff.pause()) {
+        if (lithe_nospin_idle() ? my_backoff.pause_nospin(lithe_idle_yield_ns())
+                                : (lithe_should_stop_spinning() || my_backoff.pause())) {
             my_arena.out_of_work();
             return true;
         }
@@ -64,7 +65,7 @@ public:
         __TBB_ASSERT(t == nullptr, nullptr);
 
         if (is_worker_should_leave(slot)) {
-            if (is_delayed_leave_enabled()) {
+            if (is_delayed_leave_enabled() && !lithe_nospin_leave()) {
                 static constexpr std::chrono::microseconds worker_wait_leave_duration(1000);
                 static_assert(worker_wait_leave_duration > std::chrono::steady_clock::duration(1),
                               "Clock resolution is not enough for measured interval.");

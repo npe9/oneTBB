@@ -49,7 +49,7 @@ public:
         };
 
         while (my_flag.exchange(1)) {
-            if (!timed_spin_wait_until(wakeup_condition)) {
+            if (lithe_nospin_monmtx() || !timed_spin_wait_until(wakeup_condition)) {
                 ++my_waiters;
                 while (!wakeup_condition()) {
                     wait();

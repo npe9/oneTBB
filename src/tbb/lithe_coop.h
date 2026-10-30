@@ -86,6 +86,54 @@ inline bool lithe_should_stop_spinning() {
            lithe_fork_join_current_hartless_runnable() > 0;
 }
 
+//! De-spin gates (lithe-docker .build_logs/spin_census/DESPIN_RULES.md, 2026-10-24). Each is
+//! read once, default off, and applies only to a caller that may park (a Lithe context);
+//! anything else keeps the stock spin. Results: .build_logs/despin/tasks/tbb.
+inline bool lithe_env_on(const char* name) {
+    const char* e = std::getenv(name);
+    return e && e[0] == '1';
+}
+//! TBB_LITHE_NOSPIN_IDLE=1: the steal loop's stealing_loop_backoff (2*(slots+1) prolonged
+//! pauses then 100 yields -- 1000 for an external waiter -- before out_of_work) gets budget 0:
+//! the first empty steal pass goes to out_of_work, then the worker leaves for RML's sleep
+//! (futex park, woken by advertise_new_work -> wake_or_launch) and an external waiter sleeps on
+//! the arena monitor (woken by the wait_context release).
+//! DEFAULT OFF -- the spin budget buys TBB-alone throughput (A/B 2026-10-24, cores 8-11, 4 harts,
+//! n=10-20 interleaved, .build_logs/despin/tasks/tbb/{ab,focus,r3}.csv; medians, with LEAVE on):
+//! co-tenant gains -- TBB+OpenMP mix makespan 0.149 -> 0.143 s, phased mix (TBB master serial
+//! gap) OpenMP tenant 0.156 -> 0.133 -- but TBB alone loses: 1000x70 us rounds 0.0727 -> 0.0738,
+//! 10000x8 us rounds 0.0833 -> 0.0943 (+13 %): every round now re-wakes the workers through RML's
+//! futex and Lithe's unblock. TBB_LITHE_IDLE_YIELD_US=20 (yield, no PAUSE, for 20 us) is parity
+//! on the 70 us rounds (0.0726) with the same co-tenant gain, but still +9 % on 8 us rounds.
+inline bool lithe_nospin_idle() {
+    static const bool on = lithe_env_on("TBB_LITHE_NOSPIN_IDLE");
+    return on && lithe_can_park();
+}
+//! TBB_LITHE_IDLE_YIELD_US=N: with NOSPIN_IDLE, yield (no PAUSE) for up to N us before out_of_work.
+inline long lithe_idle_yield_ns() {
+    static const long ns = [] { const char* e = std::getenv("TBB_LITHE_IDLE_YIELD_US"); return e ? std::atol(e) * 1000L : 0L; }();
+    return ns;
+}
+//! TBB_LITHE_NOSPIN_LEAVE (DEFAULT ON, =0 restores the stock 1 ms yield loop): a recalled worker
+//! leaves at once instead of yielding for up to 1 ms (outermost_worker_waiter's delayed leave,
+//! the default leave policy on non-hybrid CPUs), then sleeps in RML (futex park). A/B 2026-10-24
+//! (cores 8-11, 4 harts, interleaved, n=20 over two batches, 0 failures; medians): phased
+//! TBB+OpenMP mix, OpenMP tenant 0.156 -> 0.138 s; 10000 x 8 us rounds with OpenMP, makespan
+//! 0.177 -> 0.166; 1000 x 70 us rounds with OpenMP 0.149 -> 0.151 (noise); TBB alone 0.0727 ->
+//! 0.0720, 0.0833 -> 0.0827, phased 0.3338 -> 0.3324 (parity).
+inline bool lithe_nospin_leave() {
+    static const bool on = [] { const char* e = std::getenv("TBB_LITHE_NOSPIN_LEAVE"); return !(e && e[0] == '0'); }();
+    return on && lithe_can_park();
+}
+//! TBB_LITHE_NOSPIN_MONMTX=1: concurrent_monitor_mutex::lock skips timed_spin_wait_until
+//! (5 pause rounds + 32 yields) and parks on its futex at once. Default off: a lock around a short
+//! critical section whose holder runs (DESPIN rule 4); A/B neutral (with LEAVE: mix 0.1507 = 0.1507,
+//! phased OpenMP 0.138 vs 0.137, 8 us rounds with OpenMP 0.178 vs 0.166, n=10).
+inline bool lithe_nospin_monmtx() {
+    static const bool on = lithe_env_on("TBB_LITHE_NOSPIN_MONMTX");
+    return on && lithe_can_park();
+}
+
 //! Trace phase id for a worker's idle stealing loop (spin, yields, until a task or sleep);
 //! 0 when tracing is off.
 inline int lithe_trace_steal_id() {
